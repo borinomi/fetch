@@ -6,7 +6,7 @@ services:
     ports:
       - "8010:8010"
     volumes:
-      - /fetch:/app/data/
+      - ./fetch:/app/data/
     #env_file:
     #  - .env
     environment:
