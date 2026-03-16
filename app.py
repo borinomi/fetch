@@ -9,7 +9,13 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
+
+try:
+    from playwright_stealth import stealth_async
+    STEALTH_MODE = "legacy"
+except ImportError:
+    from playwright_stealth import Stealth
+    STEALTH_MODE = "context"
 
 CDP_PORT = 9222
 CDP_HOST = os.getenv("CDP_HOST", socket.gethostbyname("host.docker.internal"))
@@ -34,6 +40,15 @@ def extract_referrer(command: str):
             return match.group(1)
     return None
 
+async def create_stealth_page(context):
+    if STEALTH_MODE == "legacy":
+        page = await context.new_page()
+        await stealth_async(page)
+        return page
+    stealth = Stealth()
+    await stealth.apply_stealth_async(context)
+    return await context.new_page()
+
 async def run_fetch(page, command: str):
     return await page.evaluate(
         """
@@ -48,37 +63,71 @@ async def run_fetch(page, command: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     playwright = await async_playwright().start()
-    browser = await playwright.chromium.connect_over_cdp(f"http://{CDP_HOST}:{CDP_PORT}")
-    context = browser.contexts[0]
-    stealth = Stealth()
-    await stealth.apply_stealth_async(context)
-    page = await context.new_page()
-
     app.state.playwright = playwright
-    app.state.browser = browser
-    app.state.context = context
-    app.state.page = page
+    app.state.browser = None
+    app.state.context = None
+    app.state.page = None
     app.state.lock = asyncio.Lock()
 
     try:
         yield
     finally:
         try:
-            if not app.state.page.is_closed():
-                await app.state.page.close()
+            page = getattr(app.state, "page", None)
+            if page and not page.is_closed():
+                await page.close()
         except Exception:
             pass
         await playwright.stop()
 
 app = FastAPI(lifespan=lifespan)
 
-async def ensure_page():
-    page = app.state.page
-    if page.is_closed():
-        context = app.state.context
-        page = await context.new_page()
-        app.state.page = page
+async def connect_browser(force=False):
+    if not force:
+        page = getattr(app.state, "page", None)
+        if page is not None:
+            try:
+                if not page.is_closed():
+                    await page.evaluate("1")
+                    return page
+            except Exception:
+                pass
+
+    browser = await app.state.playwright.chromium.connect_over_cdp(f"http://{CDP_HOST}:{CDP_PORT}")
+
+    if not browser.contexts:
+        raise RuntimeError("browser context not found")
+
+    context = browser.contexts[0]
+    page = await create_stealth_page(context)
+
+    app.state.browser = browser
+    app.state.context = context
+    app.state.page = page
+
     return page
+
+async def ensure_page():
+    return await connect_browser(force=False)
+
+@app.post("/connect")
+async def connect_only():
+    try:
+        async with app.state.lock:
+            page = await connect_browser(force=True)
+            return {
+                "success": True,
+                "url": page.url,
+                "timestamp": now_iso()
+            }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": now_iso()
+        }
 
 @app.post("/goto")
 async def goto_only(request: GotoRequest):
