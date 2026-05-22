@@ -26,6 +26,12 @@ class FetchRequest(BaseModel):
 class GotoRequest(BaseModel):
     url: str
 
+class RenderRequest(BaseModel):
+    url: str
+    wait_until: str = "networkidle"
+    wait_ms: int = 0
+
+
 def now_iso():
     return datetime.now().isoformat()
 
@@ -207,6 +213,31 @@ async def execute_fetch_goto(request: FetchRequest):
             "success": False,
             "error": str(e),
             "timestamp": now_iso()
+        }
+
+@app.post("/render")
+async def render_html(request: RenderRequest):
+    try:
+        async with app.state.lock:
+            page = await ensure_page()
+            await page.goto(request.url, wait_until=request.wait_until)
+            if request.wait_ms > 0:
+                await asyncio.sleep(request.wait_ms / 1000)
+            html = await page.content()
+            return {
+                "success": True,
+                "url": page.url,
+                "html": html,
+                "length": len(html),
+                "timestamp": now_iso(),
+            }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": now_iso(),
         }
 
 if __name__ == "__main__":
