@@ -30,6 +30,7 @@ class RenderRequest(BaseModel):
     url: str
     wait_until: str = "networkidle"
     wait_ms: int = 0
+    timeout_ms: int = 30000
 
 
 def now_iso():
@@ -220,7 +221,7 @@ async def render_html(request: RenderRequest):
     try:
         async with app.state.lock:
             page = await ensure_page()
-            await page.goto(request.url, wait_until=request.wait_until)
+            await page.goto(request.url, wait_until=request.wait_until, timeout=request.timeout_ms, )
             if request.wait_ms > 0:
                 await asyncio.sleep(request.wait_ms / 1000)
             html = await page.content()
