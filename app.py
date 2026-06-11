@@ -9,6 +9,7 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
+from fastapi.responses import Response
 
 try:
     from playwright_stealth import stealth_async
@@ -32,6 +33,15 @@ class RenderRequest(BaseModel):
     wait_ms: int = 0
     timeout_ms: int = 30000
 
+class ScreenshotRequest(BaseModel):
+    url: str
+    wait_until: str = "networkidle"
+    wait_ms: int = 0
+    timeout_ms: int = 30000
+    full_page: bool = False
+    image_type: str = "png"   # "png" or "jpeg"
+    quality: int = 80          # jpeg일 때만 사용 (1-100)
+    dismiss_banners: bool = True
 
 def now_iso():
     return datetime.now().isoformat()
@@ -116,6 +126,43 @@ async def connect_browser(force=False):
 
 async def ensure_page():
     return await connect_browser(force=False)
+
+async def hide_banners(page):
+    await page.add_style_tag(content="""
+        [class*="cookie"],
+        [class*="consent"],
+        [id*="cookie"],
+        [id*="consent"],
+        [class*="gdpr"],
+        [aria-label*="cookie" i],
+        [aria-label*="consent" i],
+        div[role="dialog"][aria-modal="true"] {
+            display: none !important;
+        }
+        html, body {
+            overflow: auto !important;
+        }
+    """)
+
+async def auto_scroll(page):
+    await page.evaluate("""
+        async () => {
+            await new Promise((resolve) => {
+                let totalHeight = 0;
+                const distance = 300;
+                const timer = setInterval(() => {
+                    const scrollHeight = document.body.scrollHeight;
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+                    if (totalHeight >= scrollHeight) {
+                        clearInterval(timer);
+                        window.scrollTo(0, 0);
+                        resolve();
+                    }
+                }, 100);
+            });
+        }
+    """)
 
 @app.post("/connect")
 async def connect_only():
@@ -232,6 +279,47 @@ async def render_html(request: RenderRequest):
                 "length": len(html),
                 "timestamp": now_iso(),
             }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": now_iso(),
+        }
+
+@app.post("/screenshot")
+async def screenshot(request: ScreenshotRequest):
+    try:
+        async with app.state.lock:
+            page = await ensure_page()
+            await page.goto(
+                request.url,
+                wait_until=request.wait_until,
+                timeout=request.timeout_ms,
+            )
+
+            await auto_scroll(page)
+            await asyncio.sleep(1)
+
+            if request.dismiss_banners:
+                await hide_banners(page)
+
+            if request.wait_ms > 0:
+                await asyncio.sleep(request.wait_ms / 1000)
+
+            screenshot_kwargs = {
+                "full_page": request.full_page,
+                "type": request.image_type,
+            }
+            if request.image_type == "jpeg":
+                screenshot_kwargs["quality"] = request.quality
+
+            img_bytes = await page.screenshot(**screenshot_kwargs)
+
+            media_type = "image/png" if request.image_type == "png" else "image/jpeg"
+            return Response(content=img_bytes, media_type=media_type)
+
     except Exception as e:
         import traceback
         traceback.print_exc()
