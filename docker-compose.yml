@@ -12,3 +12,4 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=UTF-8
+      - SINGLEFILE_SCRIPT_PATH=/app/singlefile-injected.js
