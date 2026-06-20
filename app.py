@@ -119,6 +119,11 @@ class SingleFileRequest(BaseModel):
     
     save_raw_page: bool = False
 
+class InjectCookieRequest(BaseModel):
+    cookie_string: str
+    domain: str
+    path: str = "/"
+    secure: bool = True
 
 
 # 미리 정의된 페이지 사이즈 (inch 단위)
@@ -810,6 +815,37 @@ async def capture_singlefile(request: SingleFileRequest):
             "timestamp": now_iso(),
         }
 
+@app.post("/inject_cookie")
+async def inject_cookie(request: InjectCookieRequest):
+    try:
+        cookies = []
+        for pair in request.cookie_string.split(";"):
+            pair = pair.strip()
+            if not pair or "=" not in pair:
+                continue
+            name, _, value = pair.partition("=")
+            cookies.append({
+                "name": name.strip(),
+                "value": value.strip(),
+                "domain": request.domain,
+                "path": request.path,
+                "secure": request.secure,
+                "sameSite": "Lax",
+            })
+
+        async with app.state.lock:
+            page = await ensure_page()
+            await page.context.add_cookies(cookies)
+
+            return {
+                "success": True,
+                "count": len(cookies),
+                "domain": request.domain,
+                "timestamp": now_iso(),
+            }
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return {"success": False, "error": str(e), "timestamp": now_iso()}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8010)
